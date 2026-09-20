@@ -1,13 +1,35 @@
 class Order:
     def __init__(self, order_id, side, price, qty, timestamp):
         self.order_id = order_id
-        self.side = side          # 'buy' or 'sell'
+        self.side = side          # 'buy' or 'sell' (lowercase, internal format)
         self.price = price
         self.qty = qty
         self.timestamp = timestamp
 
     def __repr__(self):
         return f"Order({self.order_id}, {self.side}, {self.price}, {self.qty})"
+
+
+def adapt_order(processor_order):
+    """
+    Convert an Order coming from Member 1's data_processing module
+    into the format expected by this OrderBook.
+
+    Member 1's Order uses:
+        side          -> 'BUY' / 'SELL' (uppercase)
+        quantity      -> instead of qty
+        timestamp_ns  -> instead of timestamp
+
+    This adapter bridges that difference without changing the
+    core matching logic below.
+    """
+    return Order(
+        order_id=processor_order.order_id,
+        side=processor_order.side.lower(),       # 'BUY' -> 'buy'
+        price=processor_order.price,
+        qty=processor_order.quantity,             # quantity -> qty
+        timestamp=processor_order.timestamp_ns    # timestamp_ns -> timestamp
+    )
 
 
 class OrderBook:
