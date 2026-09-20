@@ -64,16 +64,6 @@ Infotact_Python_Project2/
 
 ---
 
-## Team & Responsibilities
-
-| Member | Focus Area | Folder |
-|---|---|---|
-| Member 1 | Data Collection & Preprocessing (order creation, binary serialization, IPC buffer) | `src/data_processing/` |
-| Member 2 | Matching Engine (Python baseline + Cython optimization) | `src/model/` |
-| Member 3 | Market Simulation, Dashboard & Testing | `src/analysis/` |
-
----
-
 ## Key Technologies
 
 - **Python `struct` / `mmap`** — zero-copy binary serialization and shared memory
@@ -126,13 +116,3 @@ python src/analysis/dashboard.py
 # Run performance benchmarks
 python src/analysis/benchmarks.py
 ```
-
----
-
-## Performance Goals
-
-| Metric | Target |
-|---|---|
-| Matching latency | Sub-millisecond per trade |
-| IPC throughput | 1M+ orders processed with zero serialization bottleneck |
-| Garbage Collection | No GC pause triggered during the matching loop |
