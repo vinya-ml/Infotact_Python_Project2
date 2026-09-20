@@ -31,9 +31,17 @@ except Exception:  # pragma: no cover
 try:  # Member 2
     from model.baseline_matcher import OrderBook as Member2OrderBook  # type: ignore
     from model.baseline_matcher import Order as Member2Order  # type: ignore
+    try:
+        from model.baseline_matcher import adapt_order as _official_adapt  # type: ignore
+    except Exception:
+        _official_adapt = None  # type: ignore
 except Exception:  # pragma: no cover
     from src.model.baseline_matcher import OrderBook as Member2OrderBook  # type: ignore
     from src.model.baseline_matcher import Order as Member2Order  # type: ignore
+    try:
+        from src.model.baseline_matcher import adapt_order as _official_adapt  # type: ignore
+    except Exception:
+        _official_adapt = None  # type: ignore
 
 from .metrics import LatencyTracker, OrderBookAnalytics
 from .simulator import MockMarketSimulator
@@ -53,7 +61,14 @@ class BenchmarkResult:
 
 
 def _to_member2_order(unpacked) -> Member2Order:
-    """Adapt Member 1 unpacked order -> Member 2 Order."""
+    """Adapt Member 1 unpacked order -> Member 2 Order.
+
+    Prefers Member 2's official adapt_order() (added in PR #4) so the
+    bridge always matches Member 2's documented schema; falls back to
+    the equivalent local conversion on older checkouts.
+    """
+    if _official_adapt is not None:
+        return _official_adapt(unpacked)
     side = str(getattr(unpacked, "side", "BUY")).lower()  # 'buy'/'sell'
     qty = int(getattr(unpacked, "quantity", getattr(unpacked, "qty", 0)))
     ts = int(getattr(unpacked, "timestamp_ns", getattr(unpacked, "timestamp", 0)))
