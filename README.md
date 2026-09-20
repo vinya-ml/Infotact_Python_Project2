@@ -19,19 +19,19 @@ In High-Frequency Trading, microseconds equal millions of dollars. Python is typ
 ## Architecture
 
 ```
-┌────────────────────┐      ┌──────────────────────┐      ┌────────────────────┐
-│   Market Firehose    │ ---> │   mmap Ring Buffer    │ ---> │   Matching Engine    │
-│   (asyncio)           │      │   (Zero-Copy IPC)      │      │   (Cython)            │
-│   generates orders     │      │   shared memory bus      │      │   matches Buy/Sell      │
-└────────────────────┘      └──────────────────────┘      └─────────┬──────────┘
-                                                                          │
-                                                                          v
-                                                              ┌────────────────────┐
-                                                              │  Terminal Dashboard  │
-                                                              │  (curses / Rich)      │
-                                                              │  live order book +    │
-                                                              │  latency metrics       │
-                                                              └────────────────────┘
+┌────────────────────────┐      ┌────────────────────────┐      ┌────────────────────────┐
+│    Market Firehose     │ ---> │    mmap Ring Buffer    │ ---> │    Matching Engine     │
+│       (asyncio)        │      │    (Zero-Copy IPC)     │      │        (Cython)        │
+│    generates orders    │      │   shared memory bus    │      │    matches Buy/Sell    │
+└────────────────────────┘      └────────────────────────┘      └────────────┬───────────┘
+                                                                             │
+                                                                             v
+                                                                ┌────────────────────────┐
+                                                                │   Terminal Dashboard   │
+                                                                │    (curses / Rich)     │
+                                                                │   live order book +    │
+                                                                │    latency metrics     │
+                                                                └────────────────────────┘
 ```
 
 **Data flow:** Orders are generated → serialized into fixed-size binary records → written into a shared-memory ring buffer → read and matched by the Cython engine → matched trades are displayed live on a terminal dashboard.
@@ -136,14 +136,3 @@ python src/analysis/benchmarks.py
 | Matching latency | Sub-millisecond per trade |
 | IPC throughput | 1M+ orders processed with zero serialization bottleneck |
 | Garbage Collection | No GC pause triggered during the matching loop |
-
----
-
-## Status / Workflow
-
-*(To be updated as the project progresses)*
-
-- [ ] Week 1 — Baseline components (data pipeline, Python matcher, order generator)
-- [ ] Week 2 — Cython matching engine, dashboard scaffolding
-- [ ] Week 3 — Performance optimization & benchmarking
-- [ ] Week 4 — Final integration, polish, and reporting
