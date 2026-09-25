@@ -4,7 +4,6 @@ import struct
 import time
 from dataclasses import dataclass
 
-
 # Binary format:
 # order_id  : unsigned 64-bit integer
 # side      : 1 byte (0 = BUY, 1 = SELL)
