@@ -623,15 +623,65 @@ class CursesDashboard:
         # Bottom border
         self.safe_addstr(win, y + h - 1, x, "+" + "-" * (w - 2) + "+", attr)
 
+    def _render_compact(
+        self,
+        stdscr: curses.window,
+        max_y: int,
+        max_x: int,
+        book: OrderBookTop,
+        lat: LatencyStats,
+        state: MarketState,
+    ) -> None:
+        """Render responsive compact dashboard for smaller terminals (e.g. 50x9 to 75x21)."""
+        status = "PAUSED" if self.is_paused else "RUNNING"
+        hdr = f"CHRONOSMATCH [{status}] | Rate:{self.target_rate}/s | Orders:{state.orders_count:,} | Trades:{state.trades_count:,}"
+        self.safe_addstr(stdscr, 0, 0, hdr[:max_x - 1], self.color(self.COLOR_PAIR_HEADER) | curses.A_BOLD)
+
+        bid_s = f"${book.best_bid:.2f}" if book.best_bid is not None else "EMPTY"
+        ask_s = f"${book.best_ask:.2f}" if book.best_ask is not None else "EMPTY"
+        spread_s = f"${book.spread:.2f} ({book.spread_bps:.1f}bps)" if book.spread is not None else "N/A"
+
+        self.safe_addstr(stdscr, 1, 0, "BID: ", curses.A_BOLD)
+        self.safe_addstr(stdscr, 1, 5, f"{bid_s:<8} ", self.color(self.COLOR_PAIR_BID) | curses.A_BOLD)
+        self.safe_addstr(stdscr, 1, 14, "ASK: ", curses.A_BOLD)
+        self.safe_addstr(stdscr, 1, 19, f"{ask_s:<8} ", self.color(self.COLOR_PAIR_ASK) | curses.A_BOLD)
+        self.safe_addstr(stdscr, 1, 28, f"SPREAD: {spread_s}", self.color(self.COLOR_PAIR_SPREAD) | curses.A_BOLD)
+
+        lat_txt = f"LATENCY: Last:{lat.last_us:5.1f}us | Mean:{lat.mean_us:5.1f}us | p50:{lat.p50_us:5.1f}us | p95:{lat.p95_us:5.1f}us"
+        self.safe_addstr(stdscr, 2, 0, lat_txt[:max_x - 1])
+
+        vwap_s = f"${state.vwap:.2f}" if state.vwap is not None else "N/A"
+        spark_txt = f"TREND: [{lat.sparkline}] | Ops/s: {lat.throughput_ops:,.0f} | VWAP: {vwap_s}"
+        self.safe_addstr(stdscr, 3, 0, spark_txt[:max_x - 1], self.color(self.COLOR_PAIR_HEADER))
+
+        if max_y > 5:
+            self.safe_addstr(stdscr, 4, 0, "-" * min(max_x - 1, 75), curses.A_DIM)
+
+        curr_y = 5
+        avail_rows = max(0, max_y - curr_y - 1)
+        recent = state.recent_trades[-avail_rows:] if avail_rows > 0 else []
+        for idx, t in enumerate(recent):
+            p = float(t.get("price", 0.0))
+            q = int(t.get("qty", 0))
+            is_whale = q >= self.monitor.whale_threshold
+            flag = "[W]" if is_whale else ""
+            t_line = f"TRD #{idx+1:03d} B:{t.get('buy_id',0)} S:{t.get('sell_id',0)} ${p:.2f} Q:{q:<4} {flag}"
+            attr = self.color(self.COLOR_PAIR_WHALE) | curses.A_BOLD if is_whale else curses.A_NORMAL
+            self.safe_addstr(stdscr, curr_y + idx, 0, t_line[:max_x - 1], attr)
+
+        footer = "[q]Quit [p]Pause [s]Step [+/-]Rate (Tip: Expand terminal for full UI)"
+        self.safe_addstr(stdscr, max_y - 1, 0, footer[:max_x - 1], self.color(self.COLOR_PAIR_STATUS))
+        stdscr.refresh()
+
     def render(self, stdscr: curses.window) -> None:
         """Render complete curses dashboard frame."""
         stdscr.erase()
         max_y, max_x = stdscr.getmaxyx()
 
-        # Minimum dimension guard
-        if max_y < 22 or max_x < 76:
+        # Minimum dimension guard for tiny screens
+        if max_y < 8 or max_x < 45:
             msg1 = "ChronosMatch Latency Dashboard"
-            msg2 = f"Window size ({max_x}x{max_y}) too small! Please resize to at least 76x22."
+            msg2 = f"Window size ({max_x}x{max_y}) too small! Resize to at least 45x8."
             self.safe_addstr(stdscr, max_y // 2 - 1, max(0, (max_x - len(msg1)) // 2), msg1, curses.A_BOLD)
             self.safe_addstr(stdscr, max_y // 2, max(0, (max_x - len(msg2)) // 2), msg2, self.color(self.COLOR_PAIR_SPREAD))
             stdscr.refresh()
@@ -641,8 +691,14 @@ class CursesDashboard:
         lat = self.monitor.get_latency_stats()
         state = self.monitor.get_market_state(is_paused=self.is_paused, rate_target=self.target_rate)
 
+        # Responsive layout: If window is compact (< 22 rows or < 76 cols), render compact mode
+        if max_y < 22 or max_x < 76:
+            self._render_compact(stdscr, max_y, max_x, book, lat, state)
+            return
+
         # -------------------------------------------------------------------
-        # 1. Header Bar
+        # Full Layout: 1. Header Bar
+        # -------------------------------------------------------------------
         # -------------------------------------------------------------------
         header_title = " CHRONOSMATCH HFT DASHBOARD | Member 3: Latency & Order Book Monitor "
         engine_badge = f"[{state.engine_name}]"

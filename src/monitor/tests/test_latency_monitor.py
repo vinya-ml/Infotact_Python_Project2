@@ -232,12 +232,27 @@ def test_curses_draw_box():
 
 
 def test_curses_render_small_window_guard():
-    small_win = DummyWindow(height=10, width=40)  # smaller than min 76x22
+    small_win = DummyWindow(height=6, width=35)  # smaller than min 45x8
     dashboard = CursesDashboard(monitor=LatencyMonitor())
 
     # Should not crash, renders warning
     dashboard.render(small_win)
     assert any("too small" in s[2].lower() for s in small_win.strings)
+
+
+def test_curses_render_compact_window():
+    compact_win = DummyWindow(height=12, width=62)  # typical smaller terminal (e.g. 62x12)
+    monitor = LatencyMonitor(seed=42)
+    monitor.step(num_orders=5)
+    dashboard = CursesDashboard(monitor=monitor)
+
+    dashboard.render(compact_win)
+    rendered_text = " ".join(s[2] for s in compact_win.strings)
+    assert "CHRONOSMATCH" in rendered_text
+    assert "BID:" in rendered_text
+    assert "ASK:" in rendered_text
+    assert "SPREAD:" in rendered_text
+    assert "LATENCY:" in rendered_text
 
 
 def test_curses_render_standard_window():
