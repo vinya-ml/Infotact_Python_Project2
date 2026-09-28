@@ -8,5 +8,5 @@ dist/
 *.egg-info/
 .pytest_cache/
 src/engine/*.c
-reports/*.png
-reports/*.txt
+reports/
+*.pdf
