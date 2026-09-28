@@ -1,0 +1,32 @@
+{
+    "version": "0.2.0",
+    "configurations": [
+        {
+            "name": "Launch Latency Dashboard (Interactive)",
+            "type": "debugpy",
+            "request": "launch",
+            "module": "src.monitor.latency_monitor",
+            "console": "integratedTerminal",
+            "cwd": "${workspaceFolder}",
+            "justMyCode": true
+        },
+        {
+            "name": "Run Latency Dashboard (Single Snapshot)",
+            "type": "debugpy",
+            "request": "launch",
+            "module": "src.monitor.latency_monitor",
+            "args": ["--once"],
+            "console": "integratedTerminal",
+            "cwd": "${workspaceFolder}",
+            "justMyCode": true
+        },
+        {
+            "name": "Run All Tests (pytest)",
+            "type": "debugpy",
+            "request": "launch",
+            "module": "pytest",
+            "console": "integratedTerminal",
+            "cwd": "${workspaceFolder}"
+        }
+    ]
+}
