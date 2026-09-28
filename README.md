@@ -47,19 +47,26 @@ Infotact_Python_Project2/
 ├── .gitignore
 │
 ├── src/
-│   ├── data_processing/        # Order creation & binary serialization for IPC
+│   ├── data_processing/        # Order creation & binary serialization for IPC (Member 1 - Week 1)
 │   │   └── processor.py
 │   │
-│   ├── model/                  # Order matching engine (Python baseline + Cython)
-│   │   ├── baseline_matcher.py   # Pure-Python reference implementation
-│   │   ├── matching_engine.pyx    # Cython-optimized implementation
-│   │   ├── setup.py                # Build script for the Cython extension
-│   │   └── test_baseline.py         # Correctness tests
+│   ├── model/                  # Pure-Python baseline order matcher (Member 2 - Week 1)
+│   │   ├── baseline_matcher.py
+│   │   └── test_baseline.py
 │   │
-│   └── analysis/                # Market simulation, dashboard, and benchmarking
-│       ├── firehose.py            # asyncio order generator
-│       ├── dashboard.py            # curses/Rich terminal UI
-│       └── benchmarks.py            # Speed comparison: baseline vs Cython
+│   ├── engine/                 # Cython matching engine (Member 1 foundation + Member 2 LOB)
+│   │   ├── matching_engine.pyx
+│   │   └── __init__.py
+│   │
+│   ├── monitor/                # Raw curses Latency Dashboard & Order Book UI (Member 3 - Week 2)
+│   │   ├── latency_monitor.py
+│   │   └── tests/
+│   │
+│   └── analysis/                # Market simulation, analytics, and benchmarking (Member 3 - Week 1)
+│       ├── simulator.py
+│       ├── metrics.py
+│       ├── visualizer.py
+│       └── benchmark.py
 ```
 
 ---
@@ -104,15 +111,16 @@ python setup.py build_ext --inplace
 ## Running the Project
 
 ```bash
-# Run correctness tests
-python src/model/test_baseline.py
+# Launch Member 3's real-time raw curses Latency Dashboard & Order Book UI
+python -m src.monitor.latency_monitor
 
-# Run the market simulator
-python src/analysis/firehose.py
+# Launch dashboard in headless / ASCII snapshot mode
+python -m src.monitor.latency_monitor --once
+python -m src.monitor.latency_monitor --no-curses --rate 50
 
-# Launch the dashboard
-python src/analysis/dashboard.py
+# Run all tests (baseline matcher, analysis, and latency monitor)
+pytest
 
-# Run performance benchmarks
-python src/analysis/benchmarks.py
+# Run Week 1 analysis demo
+python -m src.analysis.run_demo --orders 1000
 ```

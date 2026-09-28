@@ -105,7 +105,23 @@ Returns total number of orders received (int) — set up by Member 1, unchanged 
 
 ---
 
+## Week 2 — Latency Dashboard & Terminal UI (src/monitor/latency_monitor.py — Member 3)
+
+### Dashboard Integration with Matching Engine
+
+Member 3's raw curses terminal dashboard consumes the engine API:
+
+| Engine Method | Purpose in Dashboard |
+|---|---|
+| `get_order_book_snapshot()` | Fetches `[best_bid, best_ask]` to compute top-of-book, spread (`best_ask - best_bid`), mid price, and spread bps |
+| `get_trades()` | Provides real-time matched trade log for execution tape (buy_id, sell_id, price, qty, notional, whale flags) |
+| `get_order_count()` | Supplies cumulative order throughput counters |
+| `buy_orders` / `sell_orders` | Provides depth ladder visualization (top price levels & resting quantities) |
+| `add_order(...)` | Timed with `time.perf_counter_ns()` to monitor sub-microsecond matching latency (min, mean, p50, p95, p99) |
+
+---
+
 ## Open Items / To Confirm
 
 - [ ] Confirm with Member 1 whether real order data (from `processor.py`) needs to be adapted before calling `add_order()` on the Cython engine, similar to `adapt_order()` in Week 1
-- [ ] Confirm with Member 3 whether `get_order_book_snapshot()` and `get_trades()` cover everything the dashboard needs, or if additional fields (e.g., trade timestamp) should be added
+- [x] Confirmed by Member 3: `get_order_book_snapshot()`, `get_trades()`, and resting book access fully satisfy the raw curses dashboard requirements. Implemented in `src/monitor/latency_monitor.py`.
