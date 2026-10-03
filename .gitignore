@@ -10,3 +10,4 @@ dist/
 src/engine/*.c
 reports/
 *.pdf
+*.mmap
