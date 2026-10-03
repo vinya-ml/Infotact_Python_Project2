@@ -3,31 +3,34 @@ ChronosMatch Zero-Copy IPC Ring Buffer (mmap-based).
 
 This is the actual shared-memory bus described in the project spec:
 a fixed-size file, memory-mapped, that two separate Python processes
-can open and read/write the exact same bytes from — no pickling,
+can open and read/write the exact same bytes from -- no pickling,
 no sockets, no serialization overhead beyond the fixed binary format
 already defined in processor.py.
 
 Layout:
-    [ header (16 bytes) ][ slot 0 ][ slot 1 ] ... [ slot N-1 ]
+    [ write_index (8 bytes) ][ read_index (8 bytes) ][ slot 0 ][ slot 1 ] ...
 
-Header (16 bytes, little-endian):
-    write_index : uint64  -> next slot index to write to
-    read_index  : uint64  -> next slot index to read from
-
-Each slot is exactly ORDER_SIZE bytes (from processor.py's ORDER_FORMAT),
-so this buffer makes no assumptions of its own about order fields --
-it just stores/retrieves whatever processor.py packs and unpacks.
+Design note (single-writer / single-reader safety):
+    write_index is only ever WRITTEN by the writer process.
+    read_index  is only ever WRITTEN by the reader process.
+    Each process only READS the other's field, never writes it.
+    This avoids the classic lost-update race where both processes
+    read-modify-write a shared header and overwrite each other's
+    update -- it only works because there is exactly one writer and
+    exactly one reader. (Multiple writers or multiple readers would
+    need real locks / atomics, which this simple proof does not add.)
 """
 
 import mmap
-import os
 import struct
 
 from src.data_processing.processor import ORDER_SIZE
 
-# Header: two uint64 counters (write_index, read_index)
-HEADER_FORMAT = "<QQ"
-HEADER_SIZE = struct.calcsize(HEADER_FORMAT)
+WRITE_INDEX_OFFSET = 0
+READ_INDEX_OFFSET = 8
+INDEX_FORMAT = "<Q"  # single uint64
+INDEX_SIZE = struct.calcsize(INDEX_FORMAT)
+HEADER_SIZE = WRITE_INDEX_OFFSET + READ_INDEX_OFFSET + INDEX_SIZE  # 16 bytes total
 
 DEFAULT_SLOTS = 100_000  # ring buffer capacity (number of orders it can hold)
 
@@ -35,7 +38,7 @@ DEFAULT_SLOTS = 100_000  # ring buffer capacity (number of orders it can hold)
 class RingBuffer:
     """
     A shared-memory ring buffer for passing fixed-size binary order
-    records between two separate Python processes.
+    records between exactly one writer process and one reader process.
     """
 
     def __init__(self, path: str, num_slots: int = DEFAULT_SLOTS, create: bool = False):
@@ -54,23 +57,27 @@ class RingBuffer:
         """Create (or reset) the backing file with the correct total size."""
         with open(self.path, "wb") as f:
             f.write(b"\x00" * self.buffer_size)
-            # Initialize header: write_index = 0, read_index = 0
-            f.seek(0)
-            f.write(struct.pack(HEADER_FORMAT, 0, 0))
 
     # -----------------------------------------------------
-    # Header access (write_index / read_index)
+    # Header access -- each index lives in its own fixed slot,
+    # and only its owning process ever writes to it.
     # -----------------------------------------------------
 
-    def _get_indices(self):
-        self._mmap.seek(0)
-        raw = self._mmap.read(HEADER_SIZE)
-        write_index, read_index = struct.unpack(HEADER_FORMAT, raw)
-        return write_index, read_index
+    def _get_write_index(self) -> int:
+        self._mmap.seek(WRITE_INDEX_OFFSET)
+        return struct.unpack(INDEX_FORMAT, self._mmap.read(INDEX_SIZE))[0]
 
-    def _set_indices(self, write_index: int, read_index: int):
-        self._mmap.seek(0)
-        self._mmap.write(struct.pack(HEADER_FORMAT, write_index, read_index))
+    def _set_write_index(self, value: int):
+        self._mmap.seek(WRITE_INDEX_OFFSET)
+        self._mmap.write(struct.pack(INDEX_FORMAT, value))
+
+    def _get_read_index(self) -> int:
+        self._mmap.seek(READ_INDEX_OFFSET)
+        return struct.unpack(INDEX_FORMAT, self._mmap.read(INDEX_SIZE))[0]
+
+    def _set_read_index(self, value: int):
+        self._mmap.seek(READ_INDEX_OFFSET)
+        self._mmap.write(struct.pack(INDEX_FORMAT, value))
 
     # -----------------------------------------------------
     # Core operations
@@ -84,20 +91,22 @@ class RingBuffer:
         """
         Write one packed order (already serialized by processor.pack_order)
         into the next available slot. Returns the slot index written to.
+
+        Must only be called from the WRITER process/side.
         """
         if len(packed_order) != self.slot_size:
             raise ValueError(
                 f"Expected {self.slot_size} bytes, got {len(packed_order)} bytes"
             )
 
-        write_index, read_index = self._get_indices()
+        write_index = self._get_write_index()
         offset = self._slot_offset(write_index)
 
         self._mmap.seek(offset)
         self._mmap.write(packed_order)
 
-        new_write_index = write_index + 1
-        self._set_indices(new_write_index, read_index)
+        # Only update write_index -- never touch read_index.
+        self._set_write_index(write_index + 1)
 
         return write_index
 
@@ -105,8 +114,11 @@ class RingBuffer:
         """
         Read the next unread order from the buffer, in bytes form.
         Returns None if there is nothing new to read.
+
+        Must only be called from the READER process/side.
         """
-        write_index, read_index = self._get_indices()
+        write_index = self._get_write_index()
+        read_index = self._get_read_index()
 
         if read_index >= write_index:
             return None  # nothing new to read
@@ -115,14 +127,14 @@ class RingBuffer:
         self._mmap.seek(offset)
         data = self._mmap.read(self.slot_size)
 
-        self._set_indices(write_index, read_index + 1)
+        # Only update read_index -- never touch write_index.
+        self._set_read_index(read_index + 1)
 
         return data
 
     def pending_count(self) -> int:
         """How many orders are written but not yet read."""
-        write_index, read_index = self._get_indices()
-        return write_index - read_index
+        return self._get_write_index() - self._get_read_index()
 
     def close(self):
         self._mmap.close()
