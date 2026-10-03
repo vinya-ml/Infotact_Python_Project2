@@ -1,0 +1,22 @@
+# ChronosMatch — Project Dependencies
+#
+# Install with:
+#   pip install -r requirements.txt
+#
+# Windows also needs Microsoft C++ Build Tools (Desktop development with
+# C++ workload) installed separately to compile the Cython engine:
+# https://visualstudio.microsoft.com/visual-cpp-build-tools/
+
+# Compiles src/engine/matching_engine.pyx into a runnable extension
+cython>=3.0
+
+# Used for all test suites (src/model, src/analysis, src/monitor)
+pytest>=9.0
+
+# Used by src/analysis/visualizer.py to generate latency/depth/trade charts
+matplotlib>=3.9
+
+# Python's `curses` module is Unix-only by default. This provides the
+# same module on Windows, needed to run src/monitor/latency_monitor.py
+# and its test suite (src/monitor/tests/test_latency_monitor.py).
+windows-curses>=2.4; platform_system == "Windows"
