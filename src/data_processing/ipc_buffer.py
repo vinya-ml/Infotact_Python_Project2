@@ -22,6 +22,7 @@ Design note (single-writer / single-reader safety):
 """
 
 import mmap
+import os
 import struct
 
 from src.data_processing.processor import ORDER_SIZE
@@ -43,12 +44,26 @@ class RingBuffer:
 
     def __init__(self, path: str, num_slots: int = DEFAULT_SLOTS, create: bool = False):
         self.path = path
-        self.num_slots = num_slots
         self.slot_size = ORDER_SIZE
-        self.buffer_size = HEADER_SIZE + (self.slot_size * self.num_slots)
 
         if create:
+            # Creator decides the size; num_slots is used as given.
+            self.num_slots = num_slots
+            self.buffer_size = HEADER_SIZE + (self.slot_size * self.num_slots)
             self._create_file()
+        else:
+            # Attacher (reader, or any later writer) derives the size from
+            # the file itself, rather than trusting a num_slots argument
+            # that could disagree with whatever the creator actually used.
+            # This is what prevents two processes (e.g. firehose.py and
+            # consumer.py) from silently assuming different buffer sizes
+            # for the same file -- a real bug caught during verification:
+            # on Windows, mmap silently extends a too-small file to match
+            # a larger requested size, which hid the mismatch; on Linux/
+            # Mac, mmap correctly refuses and raises an error instead.
+            actual_size = os.path.getsize(self.path)
+            self.buffer_size = actual_size
+            self.num_slots = (actual_size - HEADER_SIZE) // self.slot_size
 
         self._file = open(self.path, "r+b")
         self._mmap = mmap.mmap(self._file.fileno(), self.buffer_size)
