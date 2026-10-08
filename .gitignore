@@ -11,3 +11,4 @@ src/engine/*.c
 reports/
 *.pdf
 *.mmap
+BENCHMARK_RESULTS.md
