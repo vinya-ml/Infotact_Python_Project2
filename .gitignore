@@ -1,5 +1,4 @@
-@'
-__pycache__/
+﻿__pycache__/
 *.pyc
 *.pyo
 *.pyd
@@ -18,4 +17,3 @@ src/engine/*.c
 *.pdf
 *.mmap
 BENCHMARK_RESULTS.md
-'@ | Set-Content .\.gitignore -Encoding utf8
