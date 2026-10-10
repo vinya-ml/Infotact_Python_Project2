@@ -1,4 +1,3 @@
-@'
 __pycache__/
 *.pyc
 *.pyo
@@ -10,12 +9,10 @@ dist/
 .pytest_cache/
 src/engine/*.c
 
-# Ignore generated reports, but keep the Week 4 verification report
+# Ignore reports except the Week 4 verification report
 /reports/*
 !/reports/WEEK4_MEMBER1_VERIFICATION.md
 
-# Ignore runtime files
 *.pdf
 *.mmap
 BENCHMARK_RESULTS.md
-'@ | Set-Content .\.gitignore -Encoding utf8
