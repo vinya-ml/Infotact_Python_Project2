@@ -1,3 +1,4 @@
+@'
 __pycache__/
 *.pyc
 *.pyo
@@ -8,14 +9,13 @@ dist/
 *.egg-info/
 .pytest_cache/
 src/engine/*.c
-reports/
+
+# Ignore generated reports, but keep the Week 4 verification report
+/reports/*
+!/reports/WEEK4_MEMBER1_VERIFICATION.md
+
+# Ignore runtime files
 *.pdf
-
-# Runtime memory-mapped IPC files
 *.mmap
-
-# Track Week 4 Member 1 verification report
-!reports/WEEK4_MEMBER1_VERIFICATION.md
-
-!reports/
-!reports/WEEK4_MEMBER1_VERIFICATION.md
+BENCHMARK_RESULTS.md
+'@ | Set-Content .\.gitignore -Encoding utf8
