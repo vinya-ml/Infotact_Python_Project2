@@ -16,4 +16,6 @@ src/engine/*.c
 # Runtime files
 *.pdf
 *.mmap
+member-1-week4-integration
 BENCHMARK_RESULTS.md
+main
