@@ -1,4 +1,4 @@
-__pycache__/
+﻿__pycache__/
 *.pyc
 *.pyo
 *.pyd
@@ -8,7 +8,14 @@ dist/
 *.egg-info/
 .pytest_cache/
 src/engine/*.c
-reports/
+
+# Ignore generated reports except the Week 4 verification report
+/reports/*
+!/reports/WEEK4_MEMBER1_VERIFICATION.md
+
+# Runtime files
 *.pdf
 *.mmap
+member-1-week4-integration
 BENCHMARK_RESULTS.md
+main
