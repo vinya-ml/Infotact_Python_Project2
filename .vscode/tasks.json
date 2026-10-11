@@ -1,0 +1,60 @@
+{
+    "version": "2.0.0",
+    "tasks": [
+        {
+            "label": "Run Full Demo (Mmap -> Engine -> Persistence -> UI)",
+            "type": "shell",
+            "command": "py -3.11 src/demo_member3.py",
+            "group": {
+                "kind": "build",
+                "isDefault": true
+            },
+            "presentation": {
+                "reveal": "always",
+                "panel": "new"
+            },
+            "problemMatcher": []
+        },
+        {
+            "label": "Launch Live Latency Dashboard",
+            "type": "shell",
+            "command": "py -3.11 -m src.monitor.latency_monitor",
+            "presentation": {
+                "reveal": "always",
+                "panel": "new"
+            },
+            "problemMatcher": []
+        },
+        {
+            "label": "Dashboard Snapshot (Single Run)",
+            "type": "shell",
+            "command": "py -3.11 -m src.monitor.latency_monitor --once",
+            "presentation": {
+                "reveal": "always",
+                "panel": "shared"
+            },
+            "problemMatcher": []
+        },
+        {
+            "label": "Run Persistence Benchmark",
+            "type": "shell",
+            "command": "py -3.11 -m src.analysis.benchmark_persistence --orders 2000",
+            "presentation": {
+                "reveal": "always",
+                "panel": "shared"
+            },
+            "problemMatcher": []
+        },
+        {
+            "label": "Run All 69 Tests (pytest)",
+            "type": "shell",
+            "command": "py -3.11 -m pytest -v",
+            "group": "test",
+            "presentation": {
+                "reveal": "always",
+                "panel": "shared"
+            },
+            "problemMatcher": []
+        }
+    ]
+}
