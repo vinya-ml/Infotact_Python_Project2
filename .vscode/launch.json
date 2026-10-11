@@ -2,7 +2,16 @@
     "version": "0.2.0",
     "configurations": [
         {
-            "name": "Launch Latency Dashboard (Interactive)",
+            "name": "Comprehensive End-to-End Demo",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "${workspaceFolder}/src/demo_member3.py",
+            "console": "integratedTerminal",
+            "cwd": "${workspaceFolder}",
+            "justMyCode": true
+        },
+        {
+            "name": "Latency Dashboard (Interactive Curses)",
             "type": "debugpy",
             "request": "launch",
             "module": "src.monitor.latency_monitor",
@@ -11,7 +20,7 @@
             "justMyCode": true
         },
         {
-            "name": "Run Latency Dashboard (Single Snapshot)",
+            "name": "Dashboard Snapshot (Single Run)",
             "type": "debugpy",
             "request": "launch",
             "module": "src.monitor.latency_monitor",
@@ -21,10 +30,21 @@
             "justMyCode": true
         },
         {
-            "name": "Run All Tests (pytest)",
+            "name": "Comparative Persistence Benchmark",
+            "type": "debugpy",
+            "request": "launch",
+            "module": "src.analysis.benchmark_persistence",
+            "args": ["--orders", "2000"],
+            "console": "integratedTerminal",
+            "cwd": "${workspaceFolder}",
+            "justMyCode": true
+        },
+        {
+            "name": "Run Full Test Suite (69 Tests)",
             "type": "debugpy",
             "request": "launch",
             "module": "pytest",
+            "args": ["-v"],
             "console": "integratedTerminal",
             "cwd": "${workspaceFolder}"
         }
