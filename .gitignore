@@ -1,4 +1,4 @@
-﻿__pycache__/
+__pycache__/
 *.pyc
 *.pyo
 *.pyd
@@ -15,7 +15,8 @@ src/engine/*.c
 
 # Runtime files
 *.pdf
+*.db
+*.db-wal
+*.db-shm
 *.mmap
-member-1-week4-integration
 BENCHMARK_RESULTS.md
-main

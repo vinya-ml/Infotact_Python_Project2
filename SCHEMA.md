@@ -152,7 +152,7 @@ Returns the current top-of-book state:
 - `best_bid` — highest resting BUY price (or `None` if no buy orders resting)
 - `best_ask` — lowest resting SELL price (or `None` if no sell orders resting)
 
-This is used by **Member 3's dashboard** to display live Bid/Ask spread.
+This is used by the **Terminal Dashboard** to display live Bid/Ask spread.
 
 ### Engine Output — `get_order_count()`
 
@@ -181,20 +181,19 @@ python consumer.py --orders 100000
 ```
 
 - Uses the compiled Cython `MatchingEngine` if available (`src/engine/matching_engine`)
-- Falls back to the pure-Python `OrderBook` (`src/model/baseline_matcher.py`)
-  if the Cython extension hasn't been built on the current machine —
-  same fallback pattern used in `latency_monitor.py`
+- Falls back to the pure-Python reference `MatchingEngine` (`src/engine/matching_engine.py`)
+  or `OrderBook` (`src/model/baseline_matcher.py`) if the Cython extension hasn't been built
 - Translates Member 1's uppercase `'BUY'`/`'SELL'` strings into the
   engine's integer constants (`BUY = 0`, `SELL = 1`) before calling
   `add_order()`
 
 ---
 
-## Week 2 — Latency Dashboard & Terminal UI (src/monitor/latency_monitor.py — Member 3)
+## Week 2 — Latency Dashboard & Terminal UI (src/monitor/latency_monitor.py)
 
 ### Dashboard Integration with Matching Engine
 
-Member 3's raw curses terminal dashboard consumes the engine API:
+The terminal dashboard consumes the engine API:
 
 | Engine Method | Purpose in Dashboard |
 |---|---|
@@ -221,15 +220,81 @@ Full results and methodology documented in `IPC_AUDIT_RESULTS.md`.
 Verified result: 1,000,000 orders moved in ~3.09 sec (~324K orders/sec),
 ~2.2x faster than the pickle-based comparison.
 
-**Note:** for this specific proof, the buffer is sized to hold the
-entire run at once (`num_slots = num_orders`) to avoid wraparound
-mid-test. `firehose.py`/`consumer.py` use independently-sized buffers
-for normal operation and are not bound by this constraint.
+---
+
+## Weeks 3 & 4 — IPC Resilience, Background Persistence & Whale Visualization
+
+### Zero-Copy Shared Memory Ring Buffer Header Layout (`src/ipc/mmap_buffer.py`)
+
+Fixed 64-byte cache-line aligned header struct: `"<8s H I Q Q Q Q I 14s"`
+
+| Offset | Field | Type | Description |
+|---|---|---|---|
+| 0–8 | `magic` | 8 bytes | `b"CMMAP\x01\x00\x00"` magic signature |
+| 8–10 | `version` | uint16 | Header version (1) |
+| 10–14 | `record_size` | uint32 | Fixed byte size per record (33 bytes for order) |
+| 14–22 | `capacity` | uint64 | Maximum number of slots in the ring buffer |
+| 22–30 | `head_seq` | uint64 | Monotonic write sequence |
+| 30–38 | `tail_seq` | uint64 | Monotonic read sequence (default consumer) |
+| 38–46 | `dropped_count`| uint64 | Total records dropped due to buffer overflow |
+| 46–50 | `flags` | uint32 | 0 = Active, 1 = Closed |
+| 50–64 | `reserved` | 14 bytes | Padding for 64-byte cache-line alignment |
+
+### Decoupled Trade Event Schema (`src/ipc/trade_queue.py`)
+
+Standardized dataclass passed from matching engine to background persistence worker:
+
+| Field | Type | Description |
+|---|---|---|
+| `trade_id` | str | Stable deduplication key (`TRD_{buy_id}_{sell_id}_{timestamp_ns}_{seq}`) |
+| `buy_order_id` | int (uint64) | Originating buy order ID |
+| `sell_order_id` | int (uint64) | Originating sell order ID |
+| `price` | float (double) | Match price |
+| `quantity` | int (uint64) | Matched trade volume |
+| `notional` | float (double) | Notional value (`price * quantity`) |
+| `timestamp_ns` | int (uint64) | Matching execution timestamp |
+| `enqueue_time_ns`| int (uint64)| Timestamp when pushed to persistence queue |
+| `symbol` | str | Financial instrument symbol (`DEFAULT`) |
+
+### Persistent SQLite Database Schema (`src/persistence/repository.py`)
+
+Table: `matched_trades` (WAL mode enabled via `PRAGMA journal_mode=WAL`)
+
+```sql
+CREATE TABLE IF NOT EXISTS matched_trades (
+    trade_id TEXT PRIMARY KEY,
+    buy_order_id INTEGER NOT NULL,
+    sell_order_id INTEGER NOT NULL,
+    price REAL NOT NULL,
+    quantity INTEGER NOT NULL,
+    notional REAL NOT NULL,
+    timestamp_ns INTEGER NOT NULL,
+    symbol TEXT NOT NULL DEFAULT 'DEFAULT',
+    created_at TEXT NOT NULL,
+    persisted_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_trades_timestamp ON matched_trades(timestamp_ns);
+CREATE INDEX IF NOT EXISTS idx_trades_buy_order ON matched_trades(buy_order_id);
+CREATE INDEX IF NOT EXISTS idx_trades_sell_order ON matched_trades(sell_order_id);
+```
+
+### Whale Order & Sweep Event Schema (`src/monitor/latency_monitor.py`)
+
+| Field | Type | Description |
+|---|---|---|
+| `event_type` | str | `RESTING_ORDER` or `MATCHED_TRADE` |
+| `side` | str | `BUY`, `SELL`, or `TRADE` |
+| `price` | float | Order or execution price |
+| `quantity` | int | Quantity (`>= threshold`, default 500) |
+| `notional` | float | `price * quantity` |
+| `order_id` | int / None | Order ID if resting order |
+| `buy_id` / `sell_id` | int / None | Trade order IDs if executed sweep |
+| `timestamp_ns` | int | Nanosecond timestamp |
 
 ---
 
-## Open Items / To Confirm
+## Open Items & Verifications
 
-- [ ] Confirm with Member 1 whether real order data (from `processor.py`) needs to be adapted before calling `add_order()` on the Cython engine, similar to `adapt_order()` in Week 1
-- [x] Confirmed by Member 3: `get_order_book_snapshot()`, `get_trades()`, and resting book access fully satisfy the raw curses dashboard requirements. Implemented in `src/monitor/latency_monitor.py`.
-- [ ] Confirm whether `src/analysis/simulator.py` (Member 3's original synchronous generator) and `firehose.py` (new asyncio version) should be merged into one, or kept as two separate tools for different purposes (in-process benchmarking vs. real IPC demo)
+- [x] Confirmed: `get_order_book_snapshot()`, `get_trades()`, and resting book access fully satisfy terminal dashboard depth ladder and tape requirements.
+- [x] Confirmed: Zero-copy ring buffer with 64-byte aligned header supports crash-recovery and head/tail sequence tracking.
+- [x] Confirmed: Background SQLite persistence operates with WAL mode and batch transactions, decoupled from matching latency.
