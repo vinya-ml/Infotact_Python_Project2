@@ -503,42 +503,80 @@ class LatencyMonitor:
         self._sync_matched_trades_to_persistence()
         return res
 
+
     def get_top_of_book(self, depth: int = 5) -> OrderBookTop:
-        """Query top-of-book and aggregated depth ladder from the matching engine."""
+        """Return best prices, aggregated depth and resting order counts."""
+        if depth < 0:
+            raise ValueError("depth must be non-negative")
+
         raw_snapshot = self.engine.get_order_book_snapshot()
-        raw_bid, raw_ask = (raw_snapshot[0], raw_snapshot[1]) if raw_snapshot else (None, None)
+        raw_bid, raw_ask = (
+            (raw_snapshot[0], raw_snapshot[1])
+            if raw_snapshot
+            else (None, None)
+        )
 
-        buys = list(getattr(self.engine, "buy_orders", []))
-        sells = list(getattr(self.engine, "sell_orders", []))
+        if hasattr(self.engine, "get_order_book_depth"):
+            # Cython engine exposes book data through public methods.
+            bid_levels, ask_levels = self.engine.get_order_book_depth(depth)
+            bid_levels = list(bid_levels)
+            ask_levels = list(ask_levels)
 
-        bid_depth_map: dict[float, int] = collections.defaultdict(int)
-        for b in buys:
-            qty = getattr(b, "quantity", getattr(b, "qty", 0))
-            bid_depth_map[float(b.price)] += int(qty)
+            bid_count, ask_count = self.engine.get_order_book_counts()
+            bid_order_count = int(bid_count)
+            ask_order_count = int(ask_count)
 
-        ask_depth_map: dict[float, int] = collections.defaultdict(int)
-        for s in sells:
-            qty = getattr(s, "quantity", getattr(s, "qty", 0))
-            ask_depth_map[float(s.price)] += int(qty)
+            # Request enough levels to calculate full-book quantities.
+            all_bids, all_asks = self.engine.get_order_book_depth(
+                max(depth, bid_order_count + ask_order_count)
+            )
+            total_bid_qty = sum(int(qty) for _, qty in all_bids)
+            total_ask_qty = sum(int(qty) for _, qty in all_asks)
+        else:
+            # Python fallback engine.
+            buys = list(getattr(self.engine, "buy_orders", []))
+            sells = list(getattr(self.engine, "sell_orders", []))
 
-        sorted_bids = sorted(bid_depth_map.items(), key=lambda x: -x[0])
-        sorted_asks = sorted(ask_depth_map.items(), key=lambda x: x[0])
+            bid_map = collections.defaultdict(int)
+            ask_map = collections.defaultdict(int)
 
-        best_bid = raw_bid if raw_bid is not None else (sorted_bids[0][0] if sorted_bids else None)
-        best_ask = raw_ask if raw_ask is not None else (sorted_asks[0][0] if sorted_asks else None)
+            for order in buys:
+                qty = getattr(order, "quantity", getattr(order, "qty", 0))
+                bid_map[float(order.price)] += int(qty)
 
-        spread: float | None = None
-        spread_bps: float | None = None
-        mid_price: float | None = None
+            for order in sells:
+                qty = getattr(order, "quantity", getattr(order, "qty", 0))
+                ask_map[float(order.price)] += int(qty)
+
+            all_bids = sorted(
+                bid_map.items(), key=lambda item: -item[0]
+            )
+            all_asks = sorted(
+                ask_map.items(), key=lambda item: item[0]
+            )
+
+            bid_levels = all_bids[:depth]
+            ask_levels = all_asks[:depth]
+            bid_order_count = len(buys)
+            ask_order_count = len(sells)
+            total_bid_qty = sum(bid_map.values())
+            total_ask_qty = sum(ask_map.values())
+
+        best_bid = raw_bid
+        best_ask = raw_ask
+        spread = None
+        spread_bps = None
+        mid_price = None
         is_crossed = False
 
         if best_bid is not None and best_ask is not None:
             spread = best_ask - best_bid
-            mid_price = (best_ask + best_bid) / 2.0
+            mid_price = (best_bid + best_ask) / 2.0
+
             if mid_price > 0:
-                spread_bps = (spread / mid_price) * 10000.0
-            if best_bid >= best_ask:
-                is_crossed = True
+                spread_bps = spread / mid_price * 10000.0
+
+            is_crossed = best_bid >= best_ask
 
         return OrderBookTop(
             best_bid=best_bid,
@@ -546,14 +584,15 @@ class LatencyMonitor:
             spread=spread,
             spread_bps=spread_bps,
             mid_price=mid_price,
-            bid_levels=sorted_bids[:depth],
-            ask_levels=sorted_asks[:depth],
-            total_bid_qty=sum(bid_depth_map.values()),
-            total_ask_qty=sum(ask_depth_map.values()),
-            bid_order_count=len(buys),
-            ask_order_count=len(sells),
+            bid_levels=bid_levels,
+            ask_levels=ask_levels,
+            total_bid_qty=total_bid_qty,
+            total_ask_qty=total_ask_qty,
+            bid_order_count=bid_order_count,
+            ask_order_count=ask_order_count,
             is_crossed=is_crossed,
         )
+
 
     def get_latency_stats(self) -> LatencyStats:
         """Calculate latency distribution (ns & us) and throughput."""

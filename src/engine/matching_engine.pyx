@@ -8,8 +8,9 @@ from libc.math cimport isfinite
 # Order Constants
 # =========================================================
 
-cdef uint8_t BUY = 0
-cdef uint8_t SELL = 1
+BUY = 0
+SELL = 1
+HAS_CYTHON_ENGINE = True
 
 
 # =========================================================
@@ -39,16 +40,12 @@ cdef class MatchingEngine:
 
     cdef:
         uint64_t order_count
-
         COrder* buy_orders
         COrder* sell_orders
-
         uint64_t buy_count
         uint64_t sell_count
-
         uint64_t buy_capacity
         uint64_t sell_capacity
-
         CTrade* trades
         uint64_t trade_count
         uint64_t trade_capacity
@@ -59,16 +56,12 @@ cdef class MatchingEngine:
 
     def __cinit__(self):
         self.order_count = 0
-
         self.buy_orders = NULL
         self.sell_orders = NULL
-
         self.buy_count = 0
         self.sell_count = 0
-
         self.buy_capacity = 0
         self.sell_capacity = 0
-
         self.trades = NULL
         self.trade_count = 0
         self.trade_capacity = 0
@@ -269,7 +262,6 @@ cdef class MatchingEngine:
             else:
                 matched_quantity = best_sell.quantity
 
-            # Execute at the resting SELL order's price.
             self._record_trade(
                 order.order_id,
                 best_sell.order_id,
@@ -286,7 +278,6 @@ cdef class MatchingEngine:
 
                 self.sell_count -= 1
 
-        # Rest any unfilled quantity on the BUY side.
         if order.quantity > 0:
             self._insert_buy(order[0])
 
@@ -311,7 +302,6 @@ cdef class MatchingEngine:
             else:
                 matched_quantity = best_buy.quantity
 
-            # Execute at the resting BUY order's price.
             self._record_trade(
                 best_buy.order_id,
                 order.order_id,
@@ -328,7 +318,6 @@ cdef class MatchingEngine:
 
                 self.buy_count -= 1
 
-        # Rest any unfilled quantity on the SELL side.
         if order.quantity > 0:
             self._insert_sell(order[0])
 
@@ -350,7 +339,9 @@ cdef class MatchingEngine:
             raise ValueError("side must be BUY (0) or SELL (1)")
 
         if not isfinite(price) or price <= 0.0:
-            raise ValueError("price must be finite and greater than zero")
+            raise ValueError(
+                "price must be finite and greater than zero"
+            )
 
         if quantity == 0:
             raise ValueError("quantity must be greater than zero")
@@ -388,7 +379,6 @@ cdef class MatchingEngine:
 
     # =====================================================
     # Trade History
-    # Python dictionaries are created only on retrieval.
     # =====================================================
 
     cpdef list get_trades(self):
@@ -429,7 +419,44 @@ cdef class MatchingEngine:
         return (self.buy_count, self.sell_count)
 
     # =====================================================
-    # Batch Processing - Reduce Python/Cython Call Overhead
+    # Aggregated Order Book Depth
+    # =====================================================
+
+    cpdef list get_order_book_depth(self, int depth=5):
+        """Return aggregated bid and ask levels in price order."""
+        cdef dict bid_map = {}
+        cdef dict ask_map = {}
+        cdef list bids
+        cdef list asks
+        cdef uint64_t i
+        cdef double price
+        cdef uint64_t quantity
+
+        if depth < 0:
+            raise ValueError("depth must be non-negative")
+
+        for i in range(self.buy_count):
+            price = self.buy_orders[i].price
+            quantity = self.buy_orders[i].quantity
+            bid_map[price] = bid_map.get(price, 0) + quantity
+
+        for i in range(self.sell_count):
+            price = self.sell_orders[i].price
+            quantity = self.sell_orders[i].quantity
+            ask_map[price] = ask_map.get(price, 0) + quantity
+
+        # Bid prices: highest to lowest.
+        bids = list(bid_map.items())
+        bids.sort(reverse=True)
+
+        # Ask prices: lowest to highest.
+        asks = list(ask_map.items())
+        asks.sort()
+
+        return [bids[:depth], asks[:depth]]
+
+    # =====================================================
+    # Batch Processing
     # Each order: (order_id, side, price, quantity, timestamp)
     # =====================================================
 
@@ -457,8 +484,11 @@ cdef class MatchingEngine:
                 raise ValueError("side must be BUY (0) or SELL (1)")
 
             price_value = float(item[2])
+
             if not isfinite(price_value) or price_value <= 0.0:
-                raise ValueError("price must be finite and greater than zero")
+                raise ValueError(
+                    "price must be finite and greater than zero"
+                )
 
             order.order_id = item[0]
             order.side = <uint8_t>raw_side
