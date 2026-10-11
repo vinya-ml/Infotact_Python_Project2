@@ -38,7 +38,7 @@ def render_order_book_text(book, depth: int = 10) -> str:
                   key=lambda o: (-float(o.price), int(getattr(o, "timestamp", getattr(o, "timestamp_ns", 0)))))
     sells = sorted(list(getattr(book, "sell_orders", [])),
                    key=lambda o: (float(o.price), int(getattr(o, "timestamp", getattr(o, "timestamp_ns", 0)))))
-    lines = ["=" * 58, "CHRONOSMATCH ORDER BOOK (Member 3 view)", "=" * 58]
+    lines = ["=" * 58, "CHRONOSMATCH ORDER BOOK", "=" * 58]
     lines.append(f"{'ASKS (sell)':^58}")
     lines.append(f"{'Price':>12} {'Qty':>10} {'OrderID':>10}")
     lines.append("-" * 58)
