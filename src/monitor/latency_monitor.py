@@ -398,10 +398,17 @@ class LatencyMonitor:
 
     def _sync_matched_trades_to_persistence(self) -> None:
         """Enqueue any newly executed trades into the persistence queue and check for whale sweeps."""
-        trades = self.engine.get_trades()
-        total_trades = len(trades)
-        if total_trades > self._last_processed_trade_idx:
+        since_fn = getattr(self.engine, "get_trades_since", None)
+        if since_fn is not None:
+            # Compiled engine: build dicts only for trades not yet processed
+            # (get_trades() would rebuild the entire history on every call).
+            new_trades = since_fn(self._last_processed_trade_idx)
+            total_trades = self._last_processed_trade_idx + len(new_trades)
+        else:
+            trades = self.engine.get_trades()
+            total_trades = len(trades)
             new_trades = trades[self._last_processed_trade_idx:total_trades]
+        if total_trades > self._last_processed_trade_idx:
             thresh = self.get_current_whale_threshold()
 
             for tr in new_trades:
@@ -508,21 +515,38 @@ class LatencyMonitor:
         raw_snapshot = self.engine.get_order_book_snapshot()
         raw_bid, raw_ask = (raw_snapshot[0], raw_snapshot[1]) if raw_snapshot else (None, None)
 
-        buys = list(getattr(self.engine, "buy_orders", []))
-        sells = list(getattr(self.engine, "sell_orders", []))
+        depth_fn = getattr(self.engine, "get_book_depth", None)
+        if depth_fn is not None:
+            # Compiled engine: its resting orders are C-only (invisible to
+            # Python), so ask it for the aggregated price levels directly.
+            d = depth_fn(depth)
+            sorted_bids = [(float(p), int(q)) for p, q in d["bid_levels"]]
+            sorted_asks = [(float(p), int(q)) for p, q in d["ask_levels"]]
+            total_bid_qty = int(d["total_bid_qty"])
+            total_ask_qty = int(d["total_ask_qty"])
+            bid_order_count = int(d["bid_order_count"])
+            ask_order_count = int(d["ask_order_count"])
+        else:
+            # Python engines expose their resting-order lists.
+            buys = list(getattr(self.engine, "buy_orders", []))
+            sells = list(getattr(self.engine, "sell_orders", []))
 
-        bid_depth_map: dict[float, int] = collections.defaultdict(int)
-        for b in buys:
-            qty = getattr(b, "quantity", getattr(b, "qty", 0))
-            bid_depth_map[float(b.price)] += int(qty)
+            bid_depth_map: dict[float, int] = collections.defaultdict(int)
+            for b in buys:
+                qty = getattr(b, "quantity", getattr(b, "qty", 0))
+                bid_depth_map[float(b.price)] += int(qty)
 
-        ask_depth_map: dict[float, int] = collections.defaultdict(int)
-        for s in sells:
-            qty = getattr(s, "quantity", getattr(s, "qty", 0))
-            ask_depth_map[float(s.price)] += int(qty)
+            ask_depth_map: dict[float, int] = collections.defaultdict(int)
+            for s in sells:
+                qty = getattr(s, "quantity", getattr(s, "qty", 0))
+                ask_depth_map[float(s.price)] += int(qty)
 
-        sorted_bids = sorted(bid_depth_map.items(), key=lambda x: -x[0])
-        sorted_asks = sorted(ask_depth_map.items(), key=lambda x: x[0])
+            sorted_bids = sorted(bid_depth_map.items(), key=lambda x: -x[0])
+            sorted_asks = sorted(ask_depth_map.items(), key=lambda x: x[0])
+            total_bid_qty = sum(bid_depth_map.values())
+            total_ask_qty = sum(ask_depth_map.values())
+            bid_order_count = len(buys)
+            ask_order_count = len(sells)
 
         best_bid = raw_bid if raw_bid is not None else (sorted_bids[0][0] if sorted_bids else None)
         best_ask = raw_ask if raw_ask is not None else (sorted_asks[0][0] if sorted_asks else None)
@@ -548,10 +572,10 @@ class LatencyMonitor:
             mid_price=mid_price,
             bid_levels=sorted_bids[:depth],
             ask_levels=sorted_asks[:depth],
-            total_bid_qty=sum(bid_depth_map.values()),
-            total_ask_qty=sum(ask_depth_map.values()),
-            bid_order_count=len(buys),
-            ask_order_count=len(sells),
+            total_bid_qty=total_bid_qty,
+            total_ask_qty=total_ask_qty,
+            bid_order_count=bid_order_count,
+            ask_order_count=ask_order_count,
             is_crossed=is_crossed,
         )
 
