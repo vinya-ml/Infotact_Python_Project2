@@ -510,10 +510,18 @@ class LatencyMonitor:
         self._sync_matched_trades_to_persistence()
         return res
 
+
     def get_top_of_book(self, depth: int = 5) -> OrderBookTop:
-        """Query top-of-book and aggregated depth ladder from the matching engine."""
+        """Return best prices, aggregated depth and resting order counts."""
+        if depth < 0:
+            raise ValueError("depth must be non-negative")
+
         raw_snapshot = self.engine.get_order_book_snapshot()
-        raw_bid, raw_ask = (raw_snapshot[0], raw_snapshot[1]) if raw_snapshot else (None, None)
+        raw_bid, raw_ask = (
+            (raw_snapshot[0], raw_snapshot[1])
+            if raw_snapshot
+            else (None, None)
+        )
 
         depth_fn = getattr(self.engine, "get_book_depth", None)
         if depth_fn is not None:
@@ -548,21 +556,21 @@ class LatencyMonitor:
             bid_order_count = len(buys)
             ask_order_count = len(sells)
 
-        best_bid = raw_bid if raw_bid is not None else (sorted_bids[0][0] if sorted_bids else None)
-        best_ask = raw_ask if raw_ask is not None else (sorted_asks[0][0] if sorted_asks else None)
-
-        spread: float | None = None
-        spread_bps: float | None = None
-        mid_price: float | None = None
+        best_bid = raw_bid
+        best_ask = raw_ask
+        spread = None
+        spread_bps = None
+        mid_price = None
         is_crossed = False
 
         if best_bid is not None and best_ask is not None:
             spread = best_ask - best_bid
-            mid_price = (best_ask + best_bid) / 2.0
+            mid_price = (best_bid + best_ask) / 2.0
+
             if mid_price > 0:
-                spread_bps = (spread / mid_price) * 10000.0
-            if best_bid >= best_ask:
-                is_crossed = True
+                spread_bps = spread / mid_price * 10000.0
+
+            is_crossed = best_bid >= best_ask
 
         return OrderBookTop(
             best_bid=best_bid,
@@ -578,6 +586,7 @@ class LatencyMonitor:
             ask_order_count=ask_order_count,
             is_crossed=is_crossed,
         )
+
 
     def get_latency_stats(self) -> LatencyStats:
         """Calculate latency distribution (ns & us) and throughput."""
