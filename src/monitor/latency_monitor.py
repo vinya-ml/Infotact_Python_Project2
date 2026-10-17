@@ -134,16 +134,20 @@ def get_matching_engine() -> tuple[MatchingEngine, str]:
 
 @dataclass
 class WhaleEvent:
-    """Represents a detected whale order or large executed trade sweep."""
-    event_type: str  # "RESTING_ORDER" or "MATCHED_TRADE"
+    """Represents a detected whale order, large executed trade, or multi-level sweep."""
+    # "RESTING_ORDER" (large order submitted), "MATCHED_TRADE" (large single
+    # trade) or "WHALE_SWEEP" (one large order that cleared several price levels)
+    event_type: str
     side: str        # "BUY", "SELL", or "TRADE"
-    price: float
-    quantity: int
+    price: float     # for WHALE_SWEEP: the first (best) price level hit
+    quantity: int    # for WHALE_SWEEP: total quantity executed by the order
     notional: float
     order_id: int | None = None
     buy_id: int | None = None
     sell_id: int | None = None
     timestamp_ns: int = 0
+    levels_cleared: int = 0        # WHALE_SWEEP only: distinct price levels consumed
+    price_end: float | None = None  # WHALE_SWEEP only: the last (worst) price level hit
 
 
 @dataclass
@@ -234,6 +238,7 @@ class MarketState:
     vwap: float | None = None
     recent_trades: list[dict[str, Any]] = field(default_factory=list)
     recent_whale_events: list[WhaleEvent] = field(default_factory=list)
+    last_whale_sweep: WhaleEvent | None = None   # newest WHALE_SWEEP, even if older than the recent list
     last_order: dict[str, Any] | None = None
     engine_name: str = "Unknown"
     is_paused: bool = False
@@ -285,6 +290,35 @@ def generate_sparkline(values: Sequence[float], width: int = 18, ascii_only: boo
 # LatencyMonitor
 # ---------------------------------------------------------------------------
 
+def format_whale_event(w: "WhaleEvent") -> tuple[str, str]:
+    """Return (tag, detail) text for a whale event, shared by the text and curses views."""
+    if w.event_type == "WHALE_SWEEP":
+        span = f"${w.price:.2f}->${w.price_end:.2f}" if w.price_end is not None else f"${w.price:.2f}"
+        return "[WHALE SWEEP]", (
+            f"Side:{w.side:<4} {w.levels_cleared} levels {span} "
+            f"Qty:{w.quantity:<6} Notional:${w.notional:10,.2f}")
+    tag = "[WHALE TRADE]" if w.event_type == "MATCHED_TRADE" else "[WHALE ORDER]"
+    return tag, (f"Side:{w.side:<4} Price:${w.price:7.2f} Qty:{w.quantity:<6} "
+                 f"Notional:${w.notional:10,.2f}")
+
+
+def select_whale_events(state: "MarketState", n: int) -> list["WhaleEvent"]:
+    """The whale events to display: the newest n, with the latest sweep pinned.
+
+    A multi-level sweep is the event the dashboard exists to highlight, but
+    trade events arrive right behind it and would scroll it off within a
+    second or two. If the latest sweep is not among the newest n events, it
+    takes the first slot and the newest n-1 other events follow it.
+    """
+    if n <= 0:
+        return []
+    shown = list(state.recent_whale_events[-n:])
+    sweep = state.last_whale_sweep
+    if sweep is not None and not any(sweep is w for w in shown):
+        shown = [sweep] + (list(state.recent_whale_events[-(n - 1):]) if n > 1 else [])
+    return shown
+
+
 class LatencyMonitor:
     """Coordinates matching engine execution, feeds, metrics, and persistence."""
 
@@ -299,6 +333,7 @@ class LatencyMonitor:
         enable_persistence: bool = False,
         db_path: str = "chronosmatch_trades.db",
         queue_capacity: int = 50000,
+        sweep_min_levels: int = 2,
     ):
         if engine is not None:
             self.engine = engine
@@ -310,6 +345,9 @@ class LatencyMonitor:
         self.base_price = float(base_price)
         self.whale_threshold = int(whale_threshold)
         self.whale_mode = str(whale_mode).lower()  # "absolute" or "relative"
+        # A whale-sized order that fills across at least this many distinct
+        # price levels is reported as a WHALE_SWEEP (0 disables the check).
+        self.sweep_min_levels = int(sweep_min_levels)
         self.rolling_window = int(rolling_window)
         self.enable_persistence = bool(enable_persistence)
         self.db_path = db_path
@@ -396,6 +434,59 @@ class LatencyMonitor:
                 timestamp_ns=ts_ns,
             ))
 
+    def _engine_trade_count(self) -> int:
+        """Number of trades the engine has produced so far (cheap on the compiled engine)."""
+        count_fn = getattr(self.engine, "get_trade_count", None)
+        if count_fn is not None:
+            return int(count_fn())
+        return len(self.engine.get_trades())
+
+    def _detect_sweep(self, order_id: int, side: str, n_before: int, ts_ns: int) -> None:
+        """Flag ONE incoming order whose fills span several price levels.
+
+        Called right after each add_order, with the engine trade count taken just
+        before it. Only trades at index >= n_before belong to this order, so
+        trades from different orders can never be merged into a false sweep.
+        """
+        if self.sweep_min_levels < 1:
+            return
+        n_after = self._engine_trade_count()
+        # Fills at N distinct levels need at least N trades: skip the common case cheaply.
+        if n_after - n_before < self.sweep_min_levels:
+            return
+
+        since_fn = getattr(self.engine, "get_trades_since", None)
+        if since_fn is not None:
+            new_trades = since_fn(n_before)
+        else:
+            new_trades = self.engine.get_trades()[n_before:n_after]
+
+        levels: list[float] = []
+        seen: set[float] = set()
+        executed = 0
+        notional = 0.0
+        for tr in new_trades:
+            price = float(tr.get("price", 0.0))
+            qty = int(tr.get("qty", tr.get("quantity", 0)))
+            executed += qty
+            notional += price * qty
+            if price not in seen:
+                seen.add(price)
+                levels.append(price)
+
+        if len(levels) >= self.sweep_min_levels and executed >= self.get_current_whale_threshold():
+            self.whale_events.append(WhaleEvent(
+                event_type="WHALE_SWEEP",
+                side=side,
+                price=levels[0],
+                quantity=executed,
+                notional=notional,
+                order_id=order_id,
+                timestamp_ns=ts_ns,
+                levels_cleared=len(levels),
+                price_end=levels[-1],
+            ))
+
     def _sync_matched_trades_to_persistence(self) -> None:
         """Enqueue any newly executed trades into the persistence queue and check for whale sweeps."""
         since_fn = getattr(self.engine, "get_trades_since", None)
@@ -455,6 +546,8 @@ class LatencyMonitor:
 
             self._on_order_submitted(order_id, order["side"], price_val, qty_val, ts_val)
 
+            n_before = self._engine_trade_count()
+
             # Measure order dispatch latency to matching engine in nanoseconds
             t0 = time.perf_counter_ns()
             self.engine.add_order(order_id, side_val, price_val, qty_val, ts_val)
@@ -465,6 +558,8 @@ class LatencyMonitor:
             self.all_latencies_ns.append(lat)
             self.rolling_latencies_ns.append(lat)
             latencies.append(lat)
+
+            self._detect_sweep(order_id, order["side"], n_before, ts_val)
 
         self._sync_matched_trades_to_persistence()
         return latencies
@@ -498,6 +593,8 @@ class LatencyMonitor:
 
         self._on_order_submitted(order_id, side_str, float(price), int(quantity), timestamp_ns)
 
+        n_before = self._engine_trade_count()
+
         t0 = time.perf_counter_ns()
         res = self.engine.add_order(order_id, side_val, float(price), int(quantity), timestamp_ns)
         t1 = time.perf_counter_ns()
@@ -507,6 +604,7 @@ class LatencyMonitor:
         self.all_latencies_ns.append(lat)
         self.rolling_latencies_ns.append(lat)
 
+        self._detect_sweep(order_id, side_str, n_before, timestamp_ns)
         self._sync_matched_trades_to_persistence()
         return res
 
@@ -647,6 +745,8 @@ class LatencyMonitor:
             vwap=vwap,
             recent_trades=trades[-8:],
             recent_whale_events=list(self.whale_events)[-6:],
+            last_whale_sweep=next(
+                (w for w in reversed(self.whale_events) if w.event_type == "WHALE_SWEEP"), None),
             last_order=self._last_order_info,
             engine_name=self.engine_name,
             is_paused=is_paused,
@@ -720,9 +820,9 @@ class LatencyMonitor:
         if not state.recent_whale_events:
             lines.append("  (No large orders/sweeps detected yet)")
         else:
-            for w in state.recent_whale_events[-4:]:
-                tag = "[WHALE TRADE]" if w.event_type == "MATCHED_TRADE" else "[WHALE ORDER]"
-                lines.append(f"  {tag:<15} Side:{w.side:<4} Price:${w.price:7.2f} Qty:{w.quantity:<6} Notional:${w.notional:10,.2f}")
+            for w in select_whale_events(state, 4):
+                tag, detail = format_whale_event(w)
+                lines.append(f"  {tag:<15} {detail}")
 
         lines.append("-" * 78)
         lines.append(f" RECENT MATCHED TRADES (Last {trade_count}):")
@@ -1019,14 +1119,17 @@ class CursesDashboard:
             attr=self.color(self.COLOR_PAIR_WHALE),
         )
 
-        recent_whales = state.recent_whale_events[-(whale_h - 2):]
+        recent_whales = select_whale_events(state, whale_h - 2)
         if not recent_whales:
             self.safe_addstr(stdscr, whale_y + 1, 2, "Waiting for large liquidity events or multi-level sweeps...", curses.A_DIM)
         else:
             for idx, w in enumerate(recent_whales):
-                w_tag = "[WHALE TRADE]" if w.event_type == "MATCHED_TRADE" else "[WHALE ORDER]"
-                w_str = f" #{idx+1} {w_tag:<14} Side:{w.side:<4} Price:${w.price:7.2f} Qty:{w.quantity:<5} Notional:${w.notional:10,.2f}"
-                self.safe_addstr(stdscr, whale_y + 1 + idx, 2, w_str, self.color(self.COLOR_PAIR_WHALE) | curses.A_BOLD)
+                w_tag, w_detail = format_whale_event(w)
+                w_str = f" #{idx+1} {w_tag:<14} {w_detail}"
+                w_attr = self.color(self.COLOR_PAIR_WHALE) | curses.A_BOLD
+                if w.event_type == "WHALE_SWEEP":
+                    w_attr |= curses.A_REVERSE   # inverted colours so a sweep stands out
+                self.safe_addstr(stdscr, whale_y + 1 + idx, 2, w_str, w_attr)
 
         # -------------------------------------------------------------------
         # 5. Panel Bottom: Matched Trade Execution Tape
@@ -1175,6 +1278,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--seed", type=int, default=42, help="Deterministic RNG seed (default: 42)")
     parser.add_argument("--base-price", type=float, default=100.0, help="Initial market base price (default: 100.0)")
     parser.add_argument("--whale-threshold", type=int, default=500, help="Quantity threshold for whale flag (default: 500)")
+    parser.add_argument("--sweep-levels", type=int, default=2, help="Price levels one whale order must clear to be flagged as a sweep (default: 2, 0 = off)")
     parser.add_argument("--whale-mode", type=str, default="absolute", choices=["absolute", "relative"], help="Whale detection mode (default: absolute)")
     parser.add_argument("--max-orders", type=int, default=None, help="Stop after N orders (default: infinite)")
     parser.add_argument("--no-curses", action="store_true", help="Force ASCII terminal mode without curses")
@@ -1189,6 +1293,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         base_price=args.base_price,
         whale_threshold=args.whale_threshold,
         whale_mode=args.whale_mode,
+        sweep_min_levels=args.sweep_levels,
         enable_persistence=not args.no_persistence,
         db_path=args.db_path,
     )
