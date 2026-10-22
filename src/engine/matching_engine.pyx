@@ -8,6 +8,12 @@ from libc.math cimport isfinite
 # Order Constants
 # =========================================================
 
+cdef uint8_t C_BUY = 0
+cdef uint8_t C_SELL = 1
+
+# Python-visible copies. The cdef constants above exist only in C, so Python
+# cannot import them; src/engine/__init__.py, the dashboard and the tests
+# import these names from the compiled module instead.
 BUY = 0
 SELL = 1
 HAS_CYTHON_ENGINE = True
@@ -335,7 +341,7 @@ cdef class MatchingEngine:
     ):
         cdef COrder order
 
-        if side != BUY and side != SELL:
+        if side != C_BUY and side != C_SELL:
             raise ValueError("side must be BUY (0) or SELL (1)")
 
         if not isfinite(price) or price <= 0.0:
@@ -355,7 +361,7 @@ cdef class MatchingEngine:
         if self.order_count == (<uint64_t>-1):
             raise OverflowError("Order count limit reached")
 
-        if side == BUY:
+        if side == C_BUY:
             self._match_buy(&order)
         else:
             self._match_sell(&order)
@@ -394,6 +400,94 @@ cdef class MatchingEngine:
             })
 
         return result
+
+    # =====================================================
+    # Trade History Since Index (incremental reads)
+    # Builds dictionaries only for trades at or after `start`, so a
+    # background reader does not rebuild the whole history each time.
+    # =====================================================
+
+    cpdef list get_trades_since(self, uint64_t start):
+        cdef list result = []
+        cdef uint64_t i
+
+        for i in range(start, self.trade_count):
+            result.append({
+                "buy_id": self.trades[i].buy_id,
+                "sell_id": self.trades[i].sell_id,
+                "price": self.trades[i].price,
+                "qty": self.trades[i].quantity
+            })
+
+        return result
+
+    # =====================================================
+    # Order Book Depth
+    # The resting-order arrays are C-only, so Python cannot read them
+    # directly. This aggregates them by price level (best price first)
+    # for the dashboard's depth ladder.
+    #
+    # Returns a dict:
+    #   bid_levels / ask_levels : [(price, total_qty), ...] up to max_levels
+    #   total_bid_qty / total_ask_qty : quantity resting on each whole side
+    #   bid_order_count / ask_order_count : number of resting orders
+    # =====================================================
+
+    cpdef dict get_book_depth(self, int max_levels=5):
+        cdef list bid_levels = []
+        cdef list ask_levels = []
+        cdef uint64_t i
+        cdef uint64_t total_bid = 0
+        cdef uint64_t total_ask = 0
+        cdef double level_price = 0.0
+        cdef uint64_t level_qty = 0
+        cdef bint open_level = False
+
+        for i in range(self.buy_count):
+            total_bid += self.buy_orders[i].quantity
+            if <int>len(bid_levels) >= max_levels and not open_level:
+                continue
+            if open_level and self.buy_orders[i].price == level_price:
+                level_qty += self.buy_orders[i].quantity
+                continue
+            if open_level:
+                bid_levels.append((level_price, level_qty))
+                open_level = False
+                if <int>len(bid_levels) >= max_levels:
+                    continue
+            level_price = self.buy_orders[i].price
+            level_qty = self.buy_orders[i].quantity
+            open_level = True
+        if open_level:
+            bid_levels.append((level_price, level_qty))
+
+        open_level = False
+        for i in range(self.sell_count):
+            total_ask += self.sell_orders[i].quantity
+            if <int>len(ask_levels) >= max_levels and not open_level:
+                continue
+            if open_level and self.sell_orders[i].price == level_price:
+                level_qty += self.sell_orders[i].quantity
+                continue
+            if open_level:
+                ask_levels.append((level_price, level_qty))
+                open_level = False
+                if <int>len(ask_levels) >= max_levels:
+                    continue
+            level_price = self.sell_orders[i].price
+            level_qty = self.sell_orders[i].quantity
+            open_level = True
+        if open_level:
+            ask_levels.append((level_price, level_qty))
+
+        return {
+            "bid_levels": bid_levels,
+            "ask_levels": ask_levels,
+            "total_bid_qty": total_bid,
+            "total_ask_qty": total_ask,
+            "bid_order_count": self.buy_count,
+            "ask_order_count": self.sell_count,
+        }
 
     # =====================================================
     # Best Bid / Best Ask Snapshot
@@ -480,7 +574,7 @@ cdef class MatchingEngine:
 
             raw_side = item[1]
 
-            if raw_side != BUY and raw_side != SELL:
+            if raw_side != C_BUY and raw_side != C_SELL:
                 raise ValueError("side must be BUY (0) or SELL (1)")
 
             price_value = float(item[2])
@@ -502,7 +596,7 @@ cdef class MatchingEngine:
             if self.order_count == (<uint64_t>-1):
                 raise OverflowError("Order count limit reached")
 
-            if order.side == BUY:
+            if order.side == C_BUY:
                 self._match_buy(&order)
             else:
                 self._match_sell(&order)

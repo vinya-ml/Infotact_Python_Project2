@@ -33,6 +33,7 @@ import time
 from src.analysis.metrics import LatencyTracker
 from src.analysis.simulator import MockMarketSimulator
 from src.data_processing.processor import DataProcessor
+from src.engine import HAS_CYTHON_ENGINE
 from src.engine.matching_engine import MatchingEngine
 
 BUY = 0
@@ -57,6 +58,14 @@ def _gc_collection_counter():
 
 def run_cython_benchmark(n_orders: int = 5000, seed: int = 42,
                           whale_prob: float = 0.02) -> dict:
+    if not HAS_CYTHON_ENGINE:
+        # Without the compiled engine src.engine silently provides the
+        # pure-Python reference engine; timing that and calling it
+        # "Cython" would give false numbers.
+        raise RuntimeError(
+            "The compiled Cython engine is not built, so this benchmark "
+            "would measure the Python reference engine instead. "
+            "Run: python setup.py build_ext --inplace")
     sim = MockMarketSimulator(seed=seed)
     orders = sim.generate(n_orders, whale_prob=whale_prob)
 
