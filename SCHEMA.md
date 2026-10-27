@@ -158,6 +158,25 @@ This is used by the **Terminal Dashboard** to display live Bid/Ask spread.
 
 Returns total number of orders received (int) — set up by Member 1, unchanged in Week 2.
 
+### Engine read accessors and module constants (Weeks 3–4)
+
+Available on the compiled engine (`src/engine/matching_engine.pyx`):
+
+| Method | Returns | Notes |
+|---|---|---|
+| `get_trade_count()` | int | Total trades produced so far; cheap, so callers can poll it |
+| `get_trades_since(start)` | list of trade dicts | Only trades at index `>= start`, same dict shape as `get_trades()`; empty if `start` is at or past the end. Use this instead of re-reading the whole history |
+| `get_book_depth(max_levels=5)` | dict | `bid_levels` / `ask_levels`: lists of `(price, total_qty)`, best price first, up to `max_levels`; `total_bid_qty` / `total_ask_qty`: quantity resting on each whole side; `bid_order_count` / `ask_order_count`: number of resting orders |
+| `get_order_book_counts()` | `(bid_orders, ask_orders)` | Number of resting orders per side |
+| `get_order_book_depth(depth=5)` | `[bids, asks]` | Each a list of `(price, total_qty)`, best first. Not used by the dashboard, which calls `get_book_depth()` |
+| `add_orders_batch(orders)` | int | `orders` is a list of 5-tuples `(order_id, side, price, quantity, timestamp)`; returns how many were processed. Raises `ValueError` for a bad side, non-positive or non-finite price, or zero quantity |
+
+The resting-order arrays are C-only and cannot be read from Python, which is why the depth methods exist.
+
+Module constants (importable from `src.engine` and `src.engine.matching_engine`): `BUY = 0`, `SELL = 1`, `HAS_CYTHON_ENGINE` (`True` for the compiled engine, `False` for the fallback).
+
+The pure-Python reference engine (`src/engine/matching_engine.py`, used when the compiled build is missing) provides only `add_order`, `get_trades`, `get_order_book_snapshot` and `get_order_count`. The dashboard falls back to reading its resting lists. Benchmarks and engine tests check `HAS_CYTHON_ENGINE` and refuse to run without the compiled engine.
+
 ### Internal Engine Components (not exposed outside the module)
 
 | Component | Purpose |
@@ -278,23 +297,52 @@ CREATE INDEX IF NOT EXISTS idx_trades_buy_order ON matched_trades(buy_order_id);
 CREATE INDEX IF NOT EXISTS idx_trades_sell_order ON matched_trades(sell_order_id);
 ```
 
+### Persistence Worker: Retry Behaviour and Metrics (`src/persistence/worker.py`)
+
+Guarantees:
+- A batch whose database write fails is kept and retried (pause 0.05 s, doubling up to 2 s) until it succeeds, before any newer trade is taken, so trades are neither skipped nor reordered.
+- While the database is down, new trades wait in the queue. If the queue itself overflows, its drop counter records the loss.
+- At shutdown, retries are bounded (3 attempts per batch) so exit cannot hang. Trades that still cannot be written are counted in `trades_abandoned`, an error is logged, and the worker state becomes `ERROR`.
+- Not covered: a hard process kill loses trades that were queued but not yet written.
+
+Constructor options (defaults): `retry_initial_delay=0.05`, `retry_max_delay=2.0`, `shutdown_retry_attempts=3`.
+
+Metrics (`worker.get_metrics()`):
+
+| Field | Meaning |
+|---|---|
+| `trades_received`, `trades_persisted`, `duplicate_count` | Trades written, and duplicates ignored by `trade_id` |
+| `failed_write_count` | Failed write attempts (each retry that fails counts again) |
+| `retry_count` | Retry attempts made for batches that failed |
+| `pending_retry_batch_size` | Trades currently held back waiting for a retry |
+| `trades_abandoned` | Trades given up on at shutdown because the database was still down |
+| `batch_count`, `last_batch_size`, `last_write_latency_ns`, `last_queue_latency_ns`, `total_write_time_ns`, `pending_queue_size` | Throughput and latency counters |
+
 ### Whale Order & Sweep Event Schema (`src/monitor/latency_monitor.py`)
 
 | Field | Type | Description |
 |---|---|---|
-| `event_type` | str | `RESTING_ORDER` or `MATCHED_TRADE` |
+| `event_type` | str | `RESTING_ORDER` (large order submitted), `MATCHED_TRADE` (large single trade) or `WHALE_SWEEP` (one large order that cleared several price levels) |
 | `side` | str | `BUY`, `SELL`, or `TRADE` |
-| `price` | float | Order or execution price |
-| `quantity` | int | Quantity (`>= threshold`, default 500) |
+| `price` | float | Order or execution price. For `WHALE_SWEEP`: the first (best) price level hit |
+| `quantity` | int | Quantity (`>= threshold`, default 500). For `WHALE_SWEEP`: total quantity executed by the order |
 | `notional` | float | `price * quantity` |
 | `order_id` | int / None | Order ID if resting order |
 | `buy_id` / `sell_id` | int / None | Trade order IDs if executed sweep |
 | `timestamp_ns` | int | Nanosecond timestamp |
+| `levels_cleared` | int | `WHALE_SWEEP` only: number of distinct price levels the order filled at (default 0) |
+| `price_end` | float / None | `WHALE_SWEEP` only: the last (worst) price level hit |
+
+A `WHALE_SWEEP` is raised for one incoming order when its fills span at least `sweep_min_levels` distinct prices (default 2; CLI `--sweep-levels`, 0 turns it off) and the total executed quantity reaches the whale threshold. Several fills at the same price count as one level. Only that order's own trades are examined, so trades from different orders are never merged.
 
 ---
 
 ## Open Items & Verifications
 
-- [x] Confirmed: `get_order_book_snapshot()`, `get_trades()`, and resting book access fully satisfy terminal dashboard depth ladder and tape requirements.
+- [x] Confirmed: `get_order_book_snapshot()`, `get_trades()` and `get_book_depth()` satisfy the dashboard's top-of-book, depth ladder and trade tape on the compiled engine.
 - [x] Confirmed: Zero-copy ring buffer with 64-byte aligned header supports crash-recovery and head/tail sequence tracking.
 - [x] Confirmed: Background SQLite persistence operates with WAL mode and batch transactions, decoupled from matching latency.
+- [x] Done: whale orders that clear multiple price levels are detected (`WHALE_SWEEP`) and highlighted in the dashboard.
+- [x] Done: the persistence worker retries failed writes, bounds its shutdown retries and reports `trades_abandoned`.
+- [ ] Open: `consumer.py` (the real firehose → mmap → engine path) does not persist trades. Only the dashboard and the demo/integration tests feed the persistence queue.
+- [ ] Open: three ring-buffer implementations exist (`src/data_processing/ipc_buffer.py`, `src/ipc/mmap_buffer.py`, `src/ipc/ring_buffer.py`); only the first has the 1M-order audit.

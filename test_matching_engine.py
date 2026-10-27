@@ -9,7 +9,14 @@ Run this from the project root:
     python test_matching_engine.py
 """
 
+from src.engine import HAS_CYTHON_ENGINE
 from src.engine.matching_engine import MatchingEngine
+
+if not HAS_CYTHON_ENGINE:
+    # Without the compiled engine these tests would pass against the
+    # pure-Python reference engine and wrongly report "Cython passed".
+    raise SystemExit("The compiled Cython engine is not built. "
+                     "Run: python setup.py build_ext --inplace")
 
 # Side constants must match the ones defined in matching_engine.pyx
 BUY = 0
